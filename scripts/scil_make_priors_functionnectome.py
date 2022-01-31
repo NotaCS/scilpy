@@ -32,6 +32,7 @@ from scilpy.segment.streamlines import filter_grid_roi
 from scilpy.tracking.tools import filter_streamlines_by_length
 from scilpy.tractanalysis.streamlines_metrics import compute_tract_counts_map
 from scilpy.utils.streamlines import hack_invalid_streamlines
+from scilpy.utils.streamlines import transform_warp_streamlines
 from scilpy.tractanalysis.uncompress import uncompress
 from dipy.io.streamline import load_tractogram
 from nibabel.streamlines.array_sequence import ArraySequence as AS
@@ -118,7 +119,7 @@ def voxelize_tractogram(sft):
     if resamp:
         voxed_strms = uncompress(sft.streamlines)  # Ouput fatter streamlines...
     else:  # Classic (thinner) but slower and bad with compressed streamlines
-        voxed_strms = nib.streamlines.array_sequence.ArraySequence(voxelise_strm(sft.streamlines))
+        voxed_strms = AS(voxelise_strm(sft.streamlines))
     return voxed_strms
 
 
@@ -149,6 +150,12 @@ def prep_streamlines(track_Files, ref=None, from_endpoints=False, distEnd=None):
     else:
         print("Loading tractogram")
     sft = load_tractogram(trk_File, ref, bbox_valid_check=False)
+    if not sft:
+        print("Loading the tractogram without the reference then applying the reference's affine")
+        sft = load_tractogram(trk_File, 'same', bbox_valid_check=False)
+        noTransfo = np.eye(4)  # The tractogram and the ref are considered aligned
+        sft = transform_warp_streamlines(sft, noTransfo, ref, remove_invalid=False)  # Output float64 sft
+        sft.streamlines._data = sft.streamlines._data.astype('float32')  # Back to float32, necessary for "uncompress"
     print("Filtering")
     sft = filter_streamlines_by_length(sft, 25, 250)
     sft = hack_invalid_streamlines(sft)
@@ -415,6 +422,12 @@ def main():
         else:  # Regionwise priors
             print('Loading the tractogram...')
             trk_sft = load_tractogram(trk_F, templ_i, bbox_valid_check=False)
+            if not trk_sft:
+                print("Loading the tractogram without the reference then applying the reference's affine")
+                trk_sft = load_tractogram(trk_F, 'same', bbox_valid_check=False)
+                noTransfo = np.eye(4)  # The tractogram and the ref are considered aligned
+                trk_sft = transform_warp_streamlines(trk_sft, noTransfo, templ_i, remove_invalid=False)  # Output float64 sft
+                trk_sft.streamlines._data = trk_sft.streamlines._data.astype('float32')  # Back to float32, necessary for "uncompress"
             print('Filtering')
             trk_sft = filter_streamlines_by_length(trk_sft, 25, 250)
             trk_sft = hack_invalid_streamlines(trk_sft)
