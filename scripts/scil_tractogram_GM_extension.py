@@ -20,8 +20,7 @@ import argparse
 import time
 from nibabel.affines import apply_affine
 from dipy.io.streamline import load_tractogram
-from scilpy.io.utils import (add_overwrite_arg,
-                             assert_inputs_exist)
+from scilpy.io.utils import add_overwrite_arg, assert_inputs_exist
 from nibabel.streamlines.array_sequence import ArraySequence
 from dipy.io.stateful_tractogram import StatefulTractogram
 from dipy.io.streamline import save_trk
@@ -30,28 +29,48 @@ from dipy.io.streamline import save_trk
 
 
 def _build_arg_parser():
-    p = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter,
-                                description=__doc__)
+    p = argparse.ArgumentParser(
+        formatter_class=argparse.RawTextHelpFormatter, description=__doc__
+    )
 
-    p.add_argument('in_tractogram',
-                   help='Path of the input tractograms (.trk).')
-    p.add_argument('in_grey_matter',
-                   help='Path of the brain mask or atlas of the grey matter (.nii, nii.gz).'
-                        '\n(used as anatomy reference for the tractogram)')
-    p.add_argument('out_file',
-                   help='Output file path (.trk).')
+    p.add_argument("in_tractogram", help="Path of the input tractograms (.trk).")
+    p.add_argument(
+        "in_grey_matter",
+        help="Path of the brain mask or atlas of the grey matter (.nii, nii.gz)."
+        "\n(used as anatomy reference for the tractogram)",
+    )
+    p.add_argument("out_file", help="Output file path (.trk).")
 
-    p.add_argument('-l', '--length',
-                   default=3,
-                   help='Length to add to the streamlines ends, in mm (Default=3mm).')
-    p.add_argument('-s', '--step',
-                   default=0.5,
-                   help='Step size for the added bit (in mm). Should be a multiple'
-                        '\nof the length to add (Default=0.5mm).')
-    p.add_argument('-a', '--with_atlas', action='store_true',
-                   help='If chosen, the grey matter volume must be an atlas, and the '
-                        'shaving step of the extension will take into account if the '
-                        'extension changes parcel (and will cut it).')
+    p.add_argument(
+        "-l",
+        "--length",
+        default=3,
+        help="Length to add to the streamlines ends, in mm (Default=3mm).",
+    )
+    p.add_argument(
+        "-s",
+        "--step",
+        default=0.5,
+        help="Step size for the added bit (in mm). Should be a multiple"
+        "\nof the length to add (Default=0.5mm).",
+    )
+    p.add_argument(
+        "-a",
+        "--with_atlas",
+        action="store_true",
+        help="If chosen, the grey matter volume must be an atlas, and the "
+        "shaving step of the extension will take into account if the "
+        "extension changes parcel (and will cut it).",
+    )
+    p.add_argument(
+        "-c",
+        "--compressed",
+        action="store_true",
+        help="Change the end-points of the streamlines instead of adding "
+        "multiple points after the previous end-points. This option "
+        "will preserve the compressed state of compressed streamlines "
+        "and should only be used with such compressed streamlines.",
+    )
     add_overwrite_arg(p)
 
     return p
@@ -80,24 +99,38 @@ def compute_end_bits(strml, step_nb, step_sz, nback=1):
         two end-points of each streamline. Each extension are ordered from streamline -> outward
 
     """
-    end_bits = np.zeros((len(strml), 2, step_nb, 3), dtype='f')
+    end_bits = np.zeros((len(strml), 2, step_nb, 3), dtype="f")
     for i, strm in enumerate(strml):
         end1 = strm[[0, nback]]  # First bit
         dv = end1[0] - end1[1]  # Vector to follow for the added bit
-        dv_mm = dv / np.sqrt((dv**2).sum())  # Normalized vector (mm)
+        dv_mm = dv / np.sqrt((dv ** 2).sum())  # Normalized vector (mm)
         # np.arange because we are doing a linear extrapolation
-        end_bits[i, 0, :] = np.dot(np.arange(step_sz, (step_nb+1) * step_sz, step_sz, dtype='f').reshape(-1, 1),
-                                   dv_mm.reshape(1, -1)) + end1[0]
-        end2 = strm[[-nback-1, -1]]  # Second bit
+        end_bits[i, 0, :] = (
+            np.dot(
+                np.arange(step_sz, (step_nb + 1) * step_sz, step_sz, dtype="f").reshape(
+                    -1, 1
+                ),
+                dv_mm.reshape(1, -1),
+            )
+            + end1[0]
+        )
+        end2 = strm[[-nback - 1, -1]]  # Second bit
         dv = end2[1] - end2[0]  # Vector to follow for the added bit
-        dv_mm = dv / np.sqrt((dv**2).sum())  # Normalized vector (mm)
+        dv_mm = dv / np.sqrt((dv ** 2).sum())  # Normalized vector (mm)
         # np.arange because we are doing a linear extrapolation
-        end_bits[i, 1, :] = np.dot(np.arange(step_sz, (step_nb+1) * step_sz, step_sz, dtype='f').reshape(-1, 1),
-                                   dv_mm.reshape(1, -1)) + end2[1]
+        end_bits[i, 1, :] = (
+            np.dot(
+                np.arange(step_sz, (step_nb + 1) * step_sz, step_sz, dtype="f").reshape(
+                    -1, 1
+                ),
+                dv_mm.reshape(1, -1),
+            )
+            + end2[1]
+        )
     return end_bits
 
 
-def generate_longer_streamlines(strml, end_bits_vox, atlas):
+def generate_longer_streamlines(strml, end_bits_vox, atlas, comp):
     """
     Generator that uses end_bits (in voxel space) and lengthen the streamlines while checking if the added length
     reach the GM or get out of the GM. If it doesn't reach the GM, the streamline is not lengthened,
@@ -152,8 +185,16 @@ def generate_longer_streamlines(strml, end_bits_vox, atlas):
         else:  # If it never reached GM
             end2 = end2[:0]
 
-        newStrm = np.concatenate((end1[::-1], strm, end2))
+        if comp:  # If the streamlines are compressed, we just change the end-points
+            newStrm = strm
+            if len(end1):
+                newStrm[0] = end1[-1]
+            if len(end2):
+                newStrm[-1] = end2[-1]
+        else:  # Otherwise we concatenate the new end bits
+            newStrm = np.concatenate((end1[::-1], strm, end2))
         yield newStrm
+
 
 # %% def main():
 t0 = time.time()
@@ -168,43 +209,31 @@ added_len = float(args.length)
 step_size = args.step
 
 if step_size > added_len:
-    raise ValueError('Step size bigger that the max length to add.')
+    raise ValueError("Step size bigger that the max length to add.")
 
-step_number = int(added_len//step_size)
+step_number = int(added_len // step_size)
 
 gm_im = nib.load(gm_F)
-gm = gm_im.get_fdata(dtype='f')
+gm = gm_im.get_fdata(dtype="f")
 if not args.with_atlas:
     gm = np.where(gm, 1, 0)
 
-print('Loading the tractogram...')
-trk_sft = load_tractogram(trk_F, 'same', bbox_valid_check=False)
+print("Loading the tractogram...")
+trk_sft = load_tractogram(trk_F, "same", bbox_valid_check=False)
 
 trk_sft.to_rasmm()
 trk_sft.to_corner()
 
-print('Computing all extensions...')
+print("Computing all extensions...")
 endBits = compute_end_bits(trk_sft.streamlines, step_number, step_size)
 endBits = apply_affine(np.linalg.inv(trk_sft.affine), endBits)  # To voxel space
 trk_sft.to_vox()
 
-# voxel_GM = {}
-# if args.with_atlas:
-#     parcels = np.unique(gm).tolist()
-#     try:
-#         parcels.remove(0)
-#     except ValueError:
-#         pass
-#     for parc in parcels:
-#         voxelGM = np.argwhere(gm==parc)
-#         voxel_GM[parc] = set([tuple(ind) for ind in voxelGM])
+print("Shaving bad points...")
 
-# voxelGM = np.argwhere(gm)
-# voxel_GM['gm'] = set([tuple(ind) for ind in voxelGM])
-
-print('Shaving bad points...')
-
-strm_gen = generate_longer_streamlines(trk_sft.streamlines, endBits, gm)
+strm_gen = generate_longer_streamlines(
+    trk_sft.streamlines, endBits, gm, args.compressed
+)
 new_trk_sft = StatefulTractogram(ArraySequence(strm_gen), trk_F, trk_sft.space)
 
 save_trk(new_trk_sft, args.out_file, bbox_valid_check=False)
