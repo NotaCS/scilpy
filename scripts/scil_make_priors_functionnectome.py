@@ -22,12 +22,14 @@ import argparse
 import time
 from shutil import copyfile
 from pathlib import Path
+
 # from itertools import compress
-from multiprocessing import (Pool,
-                             current_process)
-from scilpy.io.utils import (add_overwrite_arg,
-                             assert_inputs_exist,
-                             assert_output_dirs_exist_and_empty)
+from multiprocessing import Pool, current_process
+from scilpy.io.utils import (
+    add_overwrite_arg,
+    assert_inputs_exist,
+    assert_output_dirs_exist_and_empty,
+)
 from scilpy.segment.streamlines import filter_grid_roi
 from scilpy.tracking.tools import filter_streamlines_by_length
 from scilpy.tractanalysis.streamlines_metrics import compute_tract_counts_map
@@ -36,6 +38,7 @@ from scilpy.utils.streamlines import transform_warp_streamlines
 from scilpy.tractanalysis.uncompress import uncompress
 from dipy.io.streamline import load_tractogram
 from nibabel.streamlines.array_sequence import ArraySequence as AS
+
 # from scilpy.tracking.tools import resample_streamlines_step_size
 # from dipy.io.stateful_tractogram import StatefulTractogram
 # from dipy.tracking import utils
@@ -45,36 +48,61 @@ from nibabel.streamlines.array_sequence import ArraySequence as AS
 
 
 def _build_arg_parser():
-    p = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter,
-                                description=__doc__)
+    p = argparse.ArgumentParser(
+        formatter_class=argparse.RawTextHelpFormatter, description=__doc__
+    )
 
-    p.add_argument('in_dir_tractogram',
-                   help='Path of the directory containing the input '
-                   '\ntractograms (.trk).')
-    p.add_argument('in_template_file',
-                   help='Path of the brain template file (.nii, nii.gz).')
-    p.add_argument('out_dir',
-                   help='Output directory for the priors.')
+    p.add_argument(
+        "in_dir_tractogram",
+        help="Path of the directory containing the input " "\ntractograms (.trk).",
+    )
+    p.add_argument(
+        "in_template_file", help="Path of the brain template file (.nii, nii.gz)."
+    )
+    p.add_argument("out_dir", help="Output directory for the priors.")
 
-    p.add_argument('--prep',
-                   action='store_true',
-                   help='Prepare the next tractogram while the current one is'
-                   ' being processed. Speeds up a bit but increase RAM needs.'
-                   '\n(Voxelwise priors only, requires parallel processing).')
-    p.add_argument('-rd', '--in_reg_dir',
-                   help='Path to the atlas file defining the regions.')
-    p.add_argument('-pp', '--parallel_proc',
-                   help='Number of parallel processes to launch '
-                   '\n(Voxelwise priors only).')
-    p.add_argument('-ep', '--from_endpoints',
-                   action='store_true',
-                   help='Only streamlines with endpoints in the mask of the'
-                        ' voxel/region are taken into account')
-    p.add_argument('-l', '--extremity_length',
-                   default=1,
-                   help='Number of voxels away from an endpoint to consider as streamline'
-                        ' extremity when using "--from_endpoints". Only works with voxelwise'
-                        ' priors.')
+    p.add_argument(
+        "--prep",
+        action="store_true",
+        help="Prepare the next tractogram while the current one is"
+        " being processed. Speeds up a bit but increase RAM needs."
+        "\n(Voxelwise priors only, requires parallel processing).",
+    )
+    p.add_argument(
+        "-rd", "--in_reg_dir", help="Path to the atlas file defining the regions."
+    )
+    p.add_argument(
+        "-pp",
+        "--parallel_proc",
+        help="Number of parallel processes to launch " "\n(Voxelwise priors only).",
+    )
+    p.add_argument(
+        "-ep",
+        "--from_endpoints",
+        action="store_true",
+        help="Only streamlines with endpoints in the mask of the"
+        " voxel/region are taken into account",
+    )
+    p.add_argument(
+        "-l",
+        "--extremity_length",
+        default=1,
+        help="Number of voxels away from an endpoint to consider as streamline"
+        ' extremity when using "--from_endpoints". Only works with voxelwise'
+        " priors.",
+    )
+    p.add_argument(
+        "-min",
+        "--min_length",
+        default=25,
+        help="Length value (in mm) used to filter-out short streamlines.",
+    )
+    p.add_argument(
+        "-max",
+        "--max_length",
+        default=250,
+        help="Length value (in mm) used to filter-out long streamlines.",
+    )
     add_overwrite_arg(p)
 
     return p
@@ -82,37 +110,41 @@ def _build_arg_parser():
 
 def save_tmp_map(vol, file, affine):
     if os.path.isfile(file):
-        vol = vol.astype('float32')
+        vol = vol.astype("float32")
         tmp_i = nib.load(file)
         tmp_vol = tmp_i.get_fdata(dtype=np.float32)
         vol += tmp_vol
-    vol_str_i = nib.Nifti1Image(vol.astype('float32'), affine)
+    vol_str_i = nib.Nifti1Image(vol.astype("float32"), affine)
     nib.save(vol_str_i, file)
 
 
 def voxelise_strm(strmls):
     for strm in strmls:
-        strm_r = strm.astype('uint16')
+        strm_r = strm.astype("uint16")
         _, ind = np.unique(strm_r, return_index=True, axis=0)
         strm_v = strm_r[np.sort(ind)]
         yield strm_v
 
 
 def voxelize_tractogram(sft):
-    '''
+    """
     Resample the streamlines at the voxel level.
     Floor the points of the streamlines to the voxel they belong to and
     removes duplicate points. Output a list of streamlines with each point given as a tuple
     Or uses uncompress
-    '''
+    """
     sft.to_vox()
     sft.to_corner()
     resamp = False
-    for strm in sft.streamlines[range(1000)]:  # Check the first 1000 strm for compression
-        steps = [np.linalg.norm(strm[i]-strm[i+1]) for i in range(len(strm)-1)]
+    for strm in sft.streamlines[
+        range(min(1000, len(sft.streamlines)))
+    ]:  # Check the first 1000 strm for compression
+        steps = [np.linalg.norm(strm[i] - strm[i + 1]) for i in range(len(strm) - 1)]
         if max(steps) > 1.8:  # Max distance between neighbouring voxels should be 1.73
-            print('Step size bigger than a voxel (tractogram probably compressed).'
-                  ' Using uncompress function.')
+            print(
+                "Step size bigger than a voxel (tractogram probably compressed)."
+                " Using uncompress function."
+            )
             resamp = True
             break
 
@@ -123,7 +155,9 @@ def voxelize_tractogram(sft):
     return voxed_strms
 
 
-def prep_streamlines(track_Files, ref=None, from_endpoints=False, distEnd=None):
+def prep_streamlines(
+    track_Files, ref, from_endpoints=False, distEnd=1, minLen=25, maxLen=250
+):
     """
     Load and voxelise the tractogram.
     Only for voxel-wise priors.
@@ -134,38 +168,57 @@ def prep_streamlines(track_Files, ref=None, from_endpoints=False, distEnd=None):
         Path to the .trk file (and the temporary .npz saving file if needed)
     ref : nifti1.Nifti1Image
         Nibabel image of the reference template.
-    from_endpoints : args.from_endpoints
-
-    distEnd : vox2end
+    from_endpoints : bool
+        args.from_endpoints -> if True, only count streamlines with endpoints
+        in the voxel
+    distEnd : int
+        vox2end, aka extremity_length, used only with from_endpoints
+    minLen : int
+        Minimal length used to filter-out small streamlines (in mm).
+    maxLen : int
+        Maximal length used to filter-out long streamlines (in mm).
 
     Returns
     -------
-    None.
+    (empty_vol, voxel_list, stream_tpled) : tuple
+        empty_vol : bool array
+            Voxels in template but not in the tractogram
+        voxel_list : list of tuple
+            List of the coordinates of the voxels in the tractogram
+        stream_tpled : array sequence
+            (only if not saved in tmp file) Voxelized streamline
 
     """
-    trk_File = track_Files['trk_File']
-    tmp_File = track_Files['tmp_File']
+    trk_File = track_Files["trk_File"]
+    tmp_File = track_Files["tmp_File"]
     if tmp_File:
         print("Preloading next tractogram")
     else:
         print("Loading tractogram")
     sft = load_tractogram(trk_File, ref, bbox_valid_check=False)
-    if not sft:
-        print("Loading the tractogram without the reference then applying the reference's affine")
-        sft = load_tractogram(trk_File, 'same', bbox_valid_check=False)
+    if not sft:  # The loading failed
+        print(
+            "Loading the tractogram without the reference then applying the reference's affine"
+        )
+        sft = load_tractogram(trk_File, "same", bbox_valid_check=False)
         noTransfo = np.eye(4)  # The tractogram and the ref are considered aligned
-        sft = transform_warp_streamlines(sft, noTransfo, ref, remove_invalid=False)  # Output float64 sft
-        sft.streamlines._data = sft.streamlines._data.astype('float32')  # Back to float32, necessary for "uncompress"
+        sft = transform_warp_streamlines(
+            sft, noTransfo, ref, remove_invalid=False
+        )  # Output float64 sft
+        sft.streamlines._data = sft.streamlines._data.astype(
+            "float32"
+        )  # Back to float32, necessary for "uncompress"
     print("Filtering")
-    sft = filter_streamlines_by_length(sft, 25, 250)
+    sft = filter_streamlines_by_length(sft, minLen, maxLen)
     sft = hack_invalid_streamlines(sft)
     sft.to_vox()
     sft.to_corner()
-    tractomask = np.where(compute_tract_counts_map(sft.streamlines, ref.shape),
-                          True, False)
+    tractomask = np.where(
+        compute_tract_counts_map(sft.streamlines, ref.shape), True, False
+    )
     templ_v = ref.get_fdata().astype(bool)
     empty_vol = templ_v > tractomask  # Voxels in templ but not in the tractogram
-    templ_v = templ_v*tractomask  # Removing voxels with no streamlines
+    templ_v = templ_v * tractomask  # Removing voxels with no streamlines
     voxel_list = np.argwhere(templ_v)
     voxel_list = [tuple(ind) for ind in voxel_list]
     print("Resampling at the voxel level")
@@ -174,24 +227,28 @@ def prep_streamlines(track_Files, ref=None, from_endpoints=False, distEnd=None):
         stream_tpled = AS(get_endpoints(stream_tpled, distEnd))
     if tmp_File:
         stream_tpled.save(tmp_File)
-        print("Preparation for next subject done. Waiting for current subject process to end.")
+        print(
+            "Preparation for next subject done. Waiting for current subject process to end."
+        )
         return (empty_vol, voxel_list)
     else:
         return (empty_vol, voxel_list, stream_tpled)
 
 
 def visitation_mapping(area_mask, sft, out_Ftmp, affine, endpoints):
-    '''
+    """
     Creates a binary volume of all streamlines passing trhough the ROI/mask
     and save it
-    '''
+    """
     # 1
     if endpoints:
-        area_strm, _ = filter_grid_roi(sft, area_mask, 'either_end', False)
+        area_strm, _ = filter_grid_roi(sft, area_mask, "either_end", False)
     else:
-        area_strm, _ = filter_grid_roi(sft, area_mask, 'any', False)
+        area_strm, _ = filter_grid_roi(sft, area_mask, "any", False)
     # 2
-    vol_strm = np.where(compute_tract_counts_map(area_strm.streamlines, area_mask.shape), 1, 0)
+    vol_strm = np.where(
+        compute_tract_counts_map(area_strm.streamlines, area_mask.shape), 1, 0
+    )
     # 3
     save_tmp_map(vol_strm, out_Ftmp, affine)
 
@@ -200,8 +257,8 @@ def tmp2final(tmp_list, nb_trk, outdir, affine):
     for tmp_F in tmp_list:
         tmp_i = nib.load(tmp_F)
         tmp_vol = tmp_i.get_fdata(dtype=np.float32)
-        out_vol = tmp_vol/nb_trk
-        out_name = os.path.basename(tmp_F).replace('_tmp', '_vox')
+        out_vol = tmp_vol / nb_trk
+        out_name = os.path.basename(tmp_F).replace("_tmp", "_vox")
         outF = os.path.join(outdir, out_name)
         out_i = nib.Nifti1Image(out_vol, affine)
         nib.save(out_i, outF)
@@ -210,20 +267,20 @@ def tmp2final(tmp_list, nb_trk, outdir, affine):
 
 def get_endpoints(strml, lenpLen):
     for strm in strml:
-        if len(strm) > lenpLen*2:
+        if len(strm) > lenpLen * 2:
             yield np.delete(strm, slice(lenpLen, -lenpLen), 0)
         else:
             yield strm
 
 
 def loop_on_strm(voxel_list, streamlines=None):
-    '''
+    """
     streamlines must be from a voxelised sft (cf. voxelize_tractogram) and tupled
     Returns a list of dict with each voxel a key and each value the index of
     the streamlines in that voxel
 
     voxel_list should be tupled
-    '''
+    """
     voxdict = {tuple(v): [] for v in voxel_list}
     for ind, strm in enumerate(streamlines):
         for vox in strm:
@@ -232,7 +289,7 @@ def loop_on_strm(voxel_list, streamlines=None):
             except KeyError:  # When the streamline voxel is out of the template
                 pass
     for v in voxdict:
-        voxdict[v] = np.array(voxdict[v], dtype='uint32')
+        voxdict[v] = np.array(voxdict[v], dtype="uint32")
     return voxdict
 
 
@@ -246,30 +303,32 @@ def loop_on_strm_multi(strm_list):
             except KeyError:  # When the streamline voxel is out of the template
                 pass
     for v in voxdict:
-        voxdict[v] = np.array(voxdict[v], dtype='uint32')
+        voxdict[v] = np.array(voxdict[v], dtype="uint32")
     return voxdict
 
 
-def strm_multi(vlist, vdict=None, stream_tupled=None, out_dir=None, templ_i=None, logs=False):
-    if 'dict_var' in globals():  # When in a worker of a pool
+def strm_multi(
+    vlist, vdict=None, stream_tupled=None, out_dir=None, templ_i=None, logs=False
+):
+    if "dict_var" in globals():  # When in a worker of a pool
         # stream_tupled = dict_var['stream_tupled']  # In global variable already
         stream_tupled = stream_tpled
         vdict = vox_dict
-        out_dir = dict_var['out_dir']
-        templ_i = dict_var['templ_i']
+        out_dir = dict_var["out_dir"]
+        templ_i = dict_var["templ_i"]
     else:  # Must give input (vlist, vdict, stream_tupled, out_dir, templ_i)
         pass
     if logs:  # For testing
         current = current_process()
         logDir = str(Path(out_dir).parent.absolute())
-        if current.name == 'MainProcess':
-            logFile = os.path.join(logDir, 'log.txt')
+        if current.name == "MainProcess":
+            logFile = os.path.join(logDir, "log.txt")
         else:
-            logFile = os.path.join(logDir, f'log_{current._identity[0]}.txt')
+            logFile = os.path.join(logDir, f"log_{current._identity[0]}.txt")
         for vox in vlist:
             vox = tuple(vox)
-            out_name = 'probaMaps_{}_{}_{}_tmp.nii.gz'.format(*vox)
-            logtxt = f'Processing and saving {out_name}\n'
+            out_name = "probaMaps_{}_{}_{}_tmp.nii.gz".format(*vox)
+            logtxt = f"Processing and saving {out_name}\n"
             with open(logFile, "a") as log:
                 log.write(logtxt)
             out_Ftmp = os.path.join(out_dir, out_name)
@@ -277,13 +336,13 @@ def strm_multi(vlist, vdict=None, stream_tupled=None, out_dir=None, templ_i=None
             for strmInd in vdict[vox]:
                 vox_vol[tuple(stream_tupled[strmInd].T)] = 1
             save_tmp_map(vox_vol, out_Ftmp, templ_i.affine)
-        logtxt = 'Processing over for this worker\n'
+        logtxt = "Processing over for this worker\n"
         with open(logFile, "a") as log:
             log.write(logtxt)
     else:  # Normal case
         for vox in vlist:
             vox = tuple(vox)
-            out_name = 'probaMaps_{}_{}_{}_tmp.nii.gz'.format(*vox)
+            out_name = "probaMaps_{}_{}_{}_tmp.nii.gz".format(*vox)
             out_Ftmp = os.path.join(out_dir, out_name)
             vox_vol = np.zeros(templ_i.shape, dtype=np.float32)
             for strmInd in vdict[vox]:
@@ -295,8 +354,7 @@ def init_worker(out_dir, templ_i, strmtpled, vdict):
     global dict_var
     global stream_tpled
     global vox_dict
-    dict_var = {'out_dir': out_dir,
-                'templ_i': templ_i}
+    dict_var = {"out_dir": out_dir, "templ_i": templ_i}
     stream_tpled = strmtpled
     vox_dict = vdict
 
@@ -306,6 +364,7 @@ def init_worker0(voxL, strmtpled):
     global stream_tpled
     voxel_list = voxL
     stream_tpled = strmtpled
+
 
 # %%
 
@@ -318,14 +377,14 @@ def main():
     t = t0
     parser = _build_arg_parser()
     args = parser.parse_args()
-    if 'win' in sys.platform.lower():
-        raise EnvironmentError('Sorry, this program does not run on Windows currently.')
+    if "win" in sys.platform.lower():
+        raise EnvironmentError("Sorry, this program does not run on Windows currently.")
 
     assert_inputs_exist(parser, [args.in_template_file], args.in_reg_dir)
     if not os.path.isdir(args.in_dir_tractogram):
-        parser.error(f'{args.in_dir_tractogram} is not a directory.')
+        parser.error(f"{args.in_dir_tractogram} is not a directory.")
     if not len(os.listdir(args.in_dir_tractogram)):
-        parser.error(f'{args.in_dir_tractogram} is empty.')
+        parser.error(f"{args.in_dir_tractogram} is empty.")
     assert_output_dirs_exist_and_empty(parser, args, args.out_dir)
 
     if args.parallel_proc is not None:
@@ -333,26 +392,29 @@ def main():
     else:
         nb_proc = 1
     vox2end = int(args.extremity_length)
+    minL = int(args.min_length)
+    maxL = int(args.max_length)
 
     templ_i = nib.load(args.in_template_file)
     if args.in_reg_dir is None:
         templ_v = templ_i.get_fdata().astype(bool)
         max_file_nb = templ_v.sum()
     else:
-        list_reg_files = glob.glob(os.path.join(args.in_reg_dir, '*.nii*'))
+        list_reg_files = glob.glob(os.path.join(args.in_reg_dir, "*.nii*"))
 
-    trk_list = glob.glob(os.path.join(args.in_dir_tractogram, '*.trk'))
+    trk_list = glob.glob(os.path.join(args.in_dir_tractogram, "*.trk"))
     # Declaring variables defined in later loops
     next_empty_vol = None
     next_voxel_list = None
     next_tmp = None
     for n, trk_F in enumerate(trk_list):
-        print(os.path.basename(trk_F) + f' ({n+1}/{len(trk_list)})')
+        print(os.path.basename(trk_F) + f" ({n+1}/{len(trk_list)})")
         if args.in_reg_dir is None:
             if n == 0 or not args.prep:
-                trackFiles = {'trk_File': trk_F, 'tmp_File': ''}
+                trackFiles = {"trk_File": trk_F, "tmp_File": ""}
                 (empty_vol, voxel_list, stream_tpled) = prep_streamlines(
-                    trackFiles, templ_i, args.from_endpoints, vox2end)
+                    trackFiles, templ_i, args.from_endpoints, vox2end, minL, maxL
+                )
             else:
                 empty_vol = next_empty_vol
                 voxel_list = next_voxel_list
@@ -360,16 +422,16 @@ def main():
 
             if nb_proc == 1:
                 vox_dict = loop_on_strm(voxel_list, stream_tpled)
-                print('Starting process')
+                print("Starting process")
                 strm_multi(voxel_list, vox_dict, stream_tpled, args.out_dir, templ_i)
             else:  # Parallelize
-                print('Starting parallel process: Indexing streamlines to voxels')
+                print("Starting parallel process: Indexing streamlines to voxels")
                 strm_batch = np.array_split(range(len(stream_tpled)), nb_proc)
-                with Pool(processes=nb_proc,
-                          initializer=init_worker0,
-                          initargs=(voxel_list,
-                                    stream_tpled)
-                          ) as pool:
+                with Pool(
+                    processes=nb_proc,
+                    initializer=init_worker0,
+                    initargs=(voxel_list, stream_tpled),
+                ) as pool:
                     poolComp = pool.map_async(loop_on_strm_multi, strm_batch)
                     vox_dictL = poolComp.get()
                 vox_dict = vox_dictL.pop()
@@ -379,23 +441,27 @@ def main():
                         vox_dict[vox] = np.concatenate((vox_dict[vox], subdict[vox]))
 
                 vox_batchs = np.array_split(voxel_list, nb_proc)
-                print('Starting parallel process: Creating and saving the 3D maps')
-                with Pool(processes=nb_proc,
-                          initializer=init_worker,
-                          initargs=(args.out_dir,
-                                    templ_i,
-                                    stream_tpled,
-                                    vox_dict)
-                          ) as pool:
+                print("Starting parallel process: Creating and saving the 3D maps")
+                with Pool(
+                    processes=nb_proc,
+                    initializer=init_worker,
+                    initargs=(args.out_dir, templ_i, stream_tpled, vox_dict),
+                ) as pool:
                     poolCheck = pool.map_async(strm_multi, vox_batchs)
                     if args.prep and n > 0:
                         os.remove(next_tmp)  # Cleaning previous subject's file
-                    if args.prep and n < len(trk_list)-1:
-                        next_file = trk_list[n+1]
-                        next_tmp = os.path.splitext(next_file)[0] + '_tmp.npz'
-                        trackFiles = {'trk_File': next_file, 'tmp_File': next_tmp}
+                    if args.prep and n < len(trk_list) - 1:
+                        next_file = trk_list[n + 1]
+                        next_tmp = os.path.splitext(next_file)[0] + "_tmp.npz"
+                        trackFiles = {"trk_File": next_file, "tmp_File": next_tmp}
                         (next_empty_vol, next_voxel_list) = prep_streamlines(
-                            trackFiles, templ_i, args.from_endpoints, vox2end)
+                            trackFiles,
+                            templ_i,
+                            args.from_endpoints,
+                            vox2end,
+                            minL,
+                            maxL,
+                        )
                     poolCheck.wait()
 
             print('"Saving" maps of voxels with no tract')
@@ -405,30 +471,38 @@ def main():
                 vox_vol0 = np.zeros(templ_i.shape, dtype=bool)
                 n0 = 0
                 vox0 = vox_list0[n0]
-                out_name0 = 'probaMaps_{}_{}_{}_tmp.nii.gz'.format(*vox0)
+                out_name0 = "probaMaps_{}_{}_{}_tmp.nii.gz".format(*vox0)
                 out_Ftmp0 = os.path.join(args.out_dir, out_name0)
                 while os.path.isfile(out_Ftmp0) and n0 < len(vox_list0):
                     n0 += 1
                     vox0 = vox_list0[n0]
-                    out_name0 = 'probaMaps_{}_{}_{}_tmp.nii.gz'.format(*vox0)
+                    out_name0 = "probaMaps_{}_{}_{}_tmp.nii.gz".format(*vox0)
                     out_Ftmp0 = os.path.join(args.out_dir, out_name0)
                 save_tmp_map(vox_vol0, out_Ftmp0, templ_i.affine)
                 for vox in vox_list0[n0:]:
-                    out_name = 'probaMaps_{}_{}_{}_tmp.nii.gz'.format(*vox)
+                    out_name = "probaMaps_{}_{}_{}_tmp.nii.gz".format(*vox)
                     out_Ftmp = os.path.join(args.out_dir, out_name)
                     if not os.path.isfile(out_Ftmp):
                         copyfile(out_Ftmp0, out_Ftmp)
 
         else:  # Regionwise priors
-            print('Loading the tractogram...')
+            print("Loading the tractogram...")
             trk_sft = load_tractogram(trk_F, templ_i, bbox_valid_check=False)
             if not trk_sft:
-                print("Loading the tractogram without the reference then applying the reference's affine")
-                trk_sft = load_tractogram(trk_F, 'same', bbox_valid_check=False)
-                noTransfo = np.eye(4)  # The tractogram and the ref are considered aligned
-                trk_sft = transform_warp_streamlines(trk_sft, noTransfo, templ_i, remove_invalid=False)  # Output float64 sft
-                trk_sft.streamlines._data = trk_sft.streamlines._data.astype('float32')  # Back to float32, necessary for "uncompress"
-            print('Filtering')
+                print(
+                    "Loading the tractogram without the reference then applying the reference's affine"
+                )
+                trk_sft = load_tractogram(trk_F, "same", bbox_valid_check=False)
+                noTransfo = np.eye(
+                    4
+                )  # The tractogram and the ref are considered aligned
+                trk_sft = transform_warp_streamlines(
+                    trk_sft, noTransfo, templ_i, remove_invalid=False
+                )  # Output float64 sft
+                trk_sft.streamlines._data = trk_sft.streamlines._data.astype(
+                    "float32"
+                )  # Back to float32, necessary for "uncompress"
+            print("Filtering")
             trk_sft = filter_streamlines_by_length(trk_sft, 25, 250)
             trk_sft = hack_invalid_streamlines(trk_sft)
             trk_sft.to_vox()
@@ -437,31 +511,34 @@ def main():
                 reg_i = nib.load(reg_F)
                 reg_mask = reg_i.get_fdata().astype(bool)
                 reg_fname = os.path.basename(reg_F)
-                reg_name = reg_fname[:reg_fname.find('.nii')]
-                out_name = f'probaMaps_{reg_name}_tmp.nii.gz'
+                reg_name = reg_fname[: reg_fname.find(".nii")]
+                out_name = f"probaMaps_{reg_name}_tmp.nii.gz"
                 out_Ftmp = os.path.join(args.out_dir, out_name)
-                visitation_mapping(reg_mask,
-                                   trk_sft,
-                                   out_Ftmp,
-                                   templ_i.affine,
-                                   args.from_endpoints)
-        print(f'Elapsed time for current subject: {time.time()-t} sec')
+                visitation_mapping(
+                    reg_mask, trk_sft, out_Ftmp, templ_i.affine, args.from_endpoints
+                )
+        print(f"Elapsed time for current subject: {time.time()-t} sec")
         t = time.time()
-    print('Last step: normalizing maps...')
-    tmp_list = glob.glob(os.path.join(args.out_dir, '*tmp.nii.gz'))
+    print("Last step: normalizing maps...")
+    tmp_list = glob.glob(os.path.join(args.out_dir, "*tmp.nii.gz"))
     if (args.in_reg_dir is not None) or nb_proc == 1:
         tmp2final(tmp_list, len(trk_list), args.out_dir, templ_i.affine)
     else:  # Parallel proc
         tmpF_batch = np.array_split(tmp_list, nb_proc)
-        print('Starting parallel process')
+        print("Starting parallel process")
         with Pool(processes=nb_proc) as pool:
-            poolCheck = pool.starmap_async(tmp2final, zip(tmpF_batch,
-                                                          [len(trk_list)]*nb_proc,
-                                                          [args.out_dir]*nb_proc,
-                                                          [templ_i.affine]*nb_proc,))
+            poolCheck = pool.starmap_async(
+                tmp2final,
+                zip(
+                    tmpF_batch,
+                    [len(trk_list)] * nb_proc,
+                    [args.out_dir] * nb_proc,
+                    [templ_i.affine] * nb_proc,
+                ),
+            )
             poolCheck.wait()
-    print('Done. Process over.')
-    print(f'Total elapsed time: {time.time()-t0} sec')
+    print("Done. Process over.")
+    print(f"Total elapsed time: {time.time()-t0} sec")
 
 
 if __name__ == "__main__":
