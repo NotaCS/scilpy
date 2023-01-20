@@ -17,7 +17,6 @@ extension crossing hemishere, for example.
 import nibabel as nib
 import numpy as np
 import argparse
-import time
 from nibabel.affines import apply_affine
 from dipy.io.streamline import load_tractogram
 from scilpy.io.utils import add_overwrite_arg, assert_inputs_exist
@@ -196,44 +195,84 @@ def generate_longer_streamlines(strml, end_bits_vox, atlas, comp):
         yield newStrm
 
 
-# %% def main():
-t0 = time.time()
-parser = _build_arg_parser()
-args = parser.parse_args()
+def runXtension(
+    in_trk_F,
+    out_trk_F,
+    gm_F,
+    added_len=5,
+    step_size=0.5,
+    segm_gm=False,
+    compressed=False,
+):
+    """
+    Load all the files and run the extension process, then save the results.
 
-assert_inputs_exist(parser, [args.in_tractogram, args.in_grey_matter])
+    Parameters
+    ----------
+    in_trk_F : str
+        File path of the tract file to extend.
+    out_trk_F : str
+        File path where to save the extended tractogram.
+    gm_F : str
+        File path to the grey matter segmentation.
+    added_len : float
+        Length to add at the end of the streamlines (mm).
+    step_size : float
+        Length to add for each step during the extension process (mm).
+    segm_gm : bool
+        Wether the grey matter is segmented into regions (i.e. an atlas) or not.
+    compressed : bool
+        Wether the extensions will be compressed compressed or not.
 
-gm_F = args.in_grey_matter
-trk_F = args.in_tractogram
-added_len = float(args.length)
-step_size = args.step
+    """
+    if step_size > added_len:
+        raise ValueError("Step size bigger that the max length to add.")
 
-if step_size > added_len:
-    raise ValueError("Step size bigger that the max length to add.")
+    step_number = int(added_len // step_size)
 
-step_number = int(added_len // step_size)
+    gm_im = nib.load(gm_F)
+    gm = gm_im.get_fdata(dtype="f")
+    if not segm_gm:
+        gm = np.where(gm, 1, 0)
 
-gm_im = nib.load(gm_F)
-gm = gm_im.get_fdata(dtype="f")
-if not args.with_atlas:
-    gm = np.where(gm, 1, 0)
+    print("Loading the tractogram...")
+    trk_sft = load_tractogram(in_trk_F, "same", bbox_valid_check=False)
 
-print("Loading the tractogram...")
-trk_sft = load_tractogram(trk_F, "same", bbox_valid_check=False)
+    trk_sft.to_rasmm()
+    trk_sft.to_corner()
 
-trk_sft.to_rasmm()
-trk_sft.to_corner()
+    print("Computing all extensions...")
+    endBits = compute_end_bits(trk_sft.streamlines, step_number, step_size)
+    endBits = apply_affine(np.linalg.inv(trk_sft.affine), endBits)  # To voxel space
+    trk_sft.to_vox()
 
-print("Computing all extensions...")
-endBits = compute_end_bits(trk_sft.streamlines, step_number, step_size)
-endBits = apply_affine(np.linalg.inv(trk_sft.affine), endBits)  # To voxel space
-trk_sft.to_vox()
+    print("Shaving bad points...")
 
-print("Shaving bad points...")
+    strm_gen = generate_longer_streamlines(trk_sft.streamlines, endBits, gm, compressed)
+    new_trk_sft = StatefulTractogram(ArraySequence(strm_gen), in_trk_F, trk_sft.space)
 
-strm_gen = generate_longer_streamlines(
-    trk_sft.streamlines, endBits, gm, args.compressed
-)
-new_trk_sft = StatefulTractogram(ArraySequence(strm_gen), trk_F, trk_sft.space)
+    save_trk(new_trk_sft, out_trk_F, bbox_valid_check=False)
 
-save_trk(new_trk_sft, args.out_file, bbox_valid_check=False)
+
+# %%
+
+
+def main():
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+
+    assert_inputs_exist(parser, [args.in_tractogram, args.in_grey_matter])
+
+    runXtension(
+        args.in_tractogram,
+        args.out_file,
+        args.in_grey_matter,
+        float(args.length),
+        float(args.step),
+        args.with_atlas,
+        args.compressed,
+    )
+
+
+if __name__ == "__main__":
+    main()

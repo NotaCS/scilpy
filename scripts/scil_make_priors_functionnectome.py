@@ -402,7 +402,10 @@ def main():
     else:
         list_reg_files = glob.glob(os.path.join(args.in_reg_dir, "*.nii*"))
 
-    trk_list = glob.glob(os.path.join(args.in_dir_tractogram, "*.trk"))
+    ext_list = ["trk", "tck", "vtk", "fib", "dpy"]
+    trk_list = []
+    for ext in ext_list:
+        trk_list += glob.glob(os.path.join(args.in_dir_tractogram, f"*.{ext}"))
     # Declaring variables defined in later loops
     next_empty_vol = None
     next_voxel_list = None
