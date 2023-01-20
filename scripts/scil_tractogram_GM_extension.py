@@ -22,7 +22,7 @@ from dipy.io.streamline import load_tractogram
 from scilpy.io.utils import add_overwrite_arg, assert_inputs_exist
 from nibabel.streamlines.array_sequence import ArraySequence
 from dipy.io.stateful_tractogram import StatefulTractogram
-from dipy.io.streamline import save_trk
+from dipy.io.streamline import save_tractogram
 
 # %%
 
@@ -236,7 +236,7 @@ def runXtension(
         gm = np.where(gm, 1, 0)
 
     print("Loading the tractogram...")
-    trk_sft = load_tractogram(in_trk_F, "same", bbox_valid_check=False)
+    trk_sft = load_tractogram(in_trk_F, gm_im, bbox_valid_check=False)
 
     trk_sft.to_rasmm()
     trk_sft.to_corner()
@@ -249,9 +249,9 @@ def runXtension(
     print("Shaving bad points...")
 
     strm_gen = generate_longer_streamlines(trk_sft.streamlines, endBits, gm, compressed)
-    new_trk_sft = StatefulTractogram(ArraySequence(strm_gen), in_trk_F, trk_sft.space)
+    new_trk_sft = StatefulTractogram(ArraySequence(strm_gen), gm_im, trk_sft.space)
 
-    save_trk(new_trk_sft, out_trk_F, bbox_valid_check=False)
+    save_tractogram(new_trk_sft, out_trk_F, bbox_valid_check=False)
 
 
 # %%
